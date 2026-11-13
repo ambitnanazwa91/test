@@ -13,6 +13,8 @@
   let saving = false;
   let pending = false;
   let conflict = false;
+  let syncError = '';
+  let retryTimer = null;
   let lastSignature = null;
   let remoteCount = 0;
   let timer = null;
@@ -132,8 +134,8 @@
   }
   function updateStatus(message) {
     const count = bridge.get().length;
-    cloudBtn.textContent = connected ? (conflict ? '☁️ !' : ready ? '☁️ ✓' : '☁️ …') : '☁️ Chmura';
-    cloudBtn.title = conflict ? 'Konflikt synchronizacji' : connected ? 'Połączono z chmurą' : 'Połącz z chmurą';
+    cloudBtn.textContent = !connected ? '☁️ Chmura' : conflict || syncError ? '☁️ ⚠️' : saving || pending ? '☁️ ↻' : ready ? '☁️ ✓' : '☁️ …';
+    cloudBtn.title = !connected ? 'Połącz z chmurą' : conflict ? 'Konflikt synchronizacji' : syncError ? 'Błąd zapisu: ' + syncError : saving || pending ? 'Zmiany oczekują na zapis w bazie' : ready ? 'Zsynchronizowano z bazą D1' : 'Wybierz kierunek synchronizacji';
     $('cloudConnect').disabled = busy;
     $('cloudUpload').disabled = !connected || busy || saving;
     $('cloudDownload').disabled = !connected || busy || saving;
@@ -142,9 +144,10 @@
     if (message !== undefined) { tell(message); return; }
     if (!connected) tell('Jeszcze nie połączono. Lokalnie zapisanych: ' + count + ' Tamów.');
     else if (conflict) tell('⚠️ Wykryto różne zmiany na dwóch urządzeniach. Pobierz kopię danych przed wyborem, którą wersję zachować.');
+    else if (syncError) tell('⚠️ Ostatni zapis do chmury nie powiódł się: ' + syncError + (pending ? ' Zmiany nadal są zapisane lokalnie; spróbujemy ponownie.' : ''));
     else if (!ready) tell('Lokalnie: ' + count + ' Tamów, w chmurze: ' + remoteCount + '. Wybierz, którą wersję zachować. Niczego nie nadpisano.');
-    else if (saving || pending) tell('Synchronizuję zmiany… Lokalnie: ' + count + ' Tamów.');
-    else tell('✅ Synchronizacja aktywna. ' + remoteCount + ' Tamów w chmurze. Zmiany zapisują się automatycznie.');
+    else if (saving || pending) tell('⏳ Zmiany oczekują na potwierdzenie z bazy. Lokalnie: ' + count + ' Tamów.');
+    else tell('✅ Zapis potwierdzony przez API. ' + remoteCount + ' Tamów w chmurze.');
   }
   async function request(method, data) {
     const headers = { 'Authorization':'Bearer ' + token };
@@ -156,13 +159,18 @@
     let output;
     try { output = await response.json(); }
     catch { throw new Error('Serwer zwrócił niepoprawną odpowiedź (' + response.status + ').'); }
-    if (!response.ok) throw new Error(output.error || 'Błąd serwera: ' + response.status);
+    if (!response.ok) {
+      const error = new Error(output.error || 'Błąd serwera: ' + response.status);
+      error.status = response.status;
+      throw error;
+    }
     if (method === 'GET' && !Array.isArray(output.tamas)) throw new Error('Brak listy Tamów w odpowiedzi API.');
     return output;
   }
   function reportFailure(error) {
     console.error('Tama cloud sync', error);
-    updateStatus('⚠️ ' + (error?.message || 'Nie udało się połączyć z chmurą.'));
+    syncError = error?.message || 'Nie udało się połączyć z chmurą.';
+    updateStatus();
   }
   async function connect(silent = false) {
     if (busy) return;
@@ -189,6 +197,7 @@
       const previousSig = getLastSaved();
       connected = true;
       conflict = false;
+      syncError = '';
       remoteCount = remote.tamas.length;
       if (dialog.open) void refreshRemoteCount();
       // Store pairing only on this device, never in the public source code.
@@ -227,6 +236,7 @@
     if (!connected || !ready || conflict || !pending || saving || busy) return;
     saving = true;
     pending = false;
+    let sendSucceeded = false;
     updateStatus();
     try {
       // Verify no other phone has modified the remote tree since the previous sync.
@@ -240,14 +250,25 @@
       await request('PUT', payload);
       rememberSignature(signature(payload));
       remoteCount = payload.length;
+      syncError = '';
+      sendSucceeded = true;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (dialog.open) void refreshRemoteCount();
     } catch (error) {
       pending = true;
       reportFailure(error);
+      // Do not retry immediately in a tight loop when the network or DB is down.
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (connected && ready && !conflict) void flush();
+        }, 15000);
+      }
     } finally {
       saving = false;
-      // If edits happened while the request was in flight, queue another write.
-      if (ready && !conflict) refreshAfterWrite();
+      // Send any edits made while the previous request was in flight.
+      if (sendSucceeded && ready && !conflict) refreshAfterWrite();
+      else updateStatus();
     }
   }
   async function forceUpload() {
@@ -263,6 +284,7 @@
       await request('PUT', local);
       rememberSignature(signature(local));
       remoteCount = local.length;
+      syncError = '';
       if (dialog.open) void refreshRemoteCount();
       ready = true; conflict = false;
       refreshAfterWrite();
@@ -280,6 +302,7 @@
       await bridge.replace(remote.tamas);
       rememberSignature(signature(remote.tamas));
       remoteCount = remote.tamas.length;
+      syncError = '';
       if (dialog.open) void refreshRemoteCount();
       ready = true; conflict = false; pending = false;
       updateStatus();
@@ -297,6 +320,7 @@
       const remote = await request('GET');
       const remoteSig = signature(remote.tamas);
       remoteCount = remote.tamas.length;
+      syncError = '';
       if (remoteSig !== lastSignature) {
         if (localSigBefore === lastSignature && ownSignature() === localSigBefore) {
           await bridge.replace(remote.tamas);
@@ -311,7 +335,9 @@
     finally { busy = false; updateStatus($('cloudStatus').textContent); }
   }
   function disconnect() {
-    token = ''; connected = false; ready = false; conflict = false; pending = false;
+    token = ''; connected = false; ready = false; conflict = false; pending = false; syncError = '';
+    clearTimeout(timer); timer = null;
+    clearTimeout(retryTimer); retryTimer = null;
     lastSignature = null; remoteCount = 0;
     try {
       localStorage.removeItem('tama-cloud-key');
@@ -335,6 +361,7 @@
     if (!connected) return;
     if (!ready) { updateStatus(); return; }
     pending = true; updateStatus();
+    clearTimeout(retryTimer); retryTimer = null;
     clearTimeout(timer);
     timer = setTimeout(flush, 700);
   });
