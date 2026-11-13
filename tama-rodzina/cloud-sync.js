@@ -1,4 +1,4 @@
-/* TamaRodzina cloud sync, v1 — the API key stays in sessionStorage only. */
+/* TamaRodzina cloud sync, v2 — one-time pairing with persistent on-device key. */
 (() => {
   'use strict';
   const API = 'https://tama-api.yoszhi.workers.dev/api/family';
@@ -24,7 +24,8 @@
     <div class="modal-body">
       <p style="font-size:13px;line-height:1.65;color:#686480;margin:4px 0 16px">
         Połącz to urządzenie z Waszą bazą Tamów. Ten sam klucz wpisz na telefonie Pauliny.
-        Nie jest publikowany na GitHubie ani zapisywany na stałe.
+        Wpisujesz go tylko raz: aplikacja zapamiętuje go na tym urządzeniu
+        i sama łączy się z chmurą po otwarciu. Klucz nie jest publikowany na GitHubie.
       </p>
       <div class="field"><label for="cloudKey">Prywatny klucz dostępu</label>
         <input id="cloudKey" type="password" autocomplete="off" placeholder="Wklej TAMA_API_KEY" />
@@ -46,9 +47,10 @@
         <button type="button" class="btn" id="cloudDownload">↓ Pobierz Tamy z chmury</button>
       </div>
       <p style="font-size:11px;line-height:1.5;color:#a39ab4;margin:14px 0 0">
-        Po uzgodnieniu zawartości zmiany synchronizują się automatycznie.
-        Jeśli oba telefony edytują te same dane jednocześnie, aplikacja zatrzyma synchronizację
-        zamiast bez pytania nadpisać drugą wersję.
+        Po pierwszym połączeniu i uzgodnieniu danych zapis jest automatyczny.
+        Klucz pozostaje w pamięci tej przeglądarki do użycia przycisku „Rozłącz” lub usunięcia
+        danych witryny. Nie używaj tej opcji na cudzym telefonie.
+        Edycje jednocześnie na dwóch urządzeniach nadal mogą wymagać ręcznego rozwiązania konfliktu.
       </p>
     </div>`;
   document.body.appendChild(dialog);
@@ -56,17 +58,34 @@
   cloudBtn.onclick = () => { updateStatus(); if (!dialog.open) dialog.showModal(); };
   const keyField = $('cloudKey');
 
-  const signature = (tamas) => JSON.stringify(
+  // Tiny data fingerprint instead of duplicating full-size images in localStorage.
+  function digest(text) {
+    let a = 2166136261, b = 2654435761;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      a = Math.imul(a ^ ch, 16777619) >>> 0;
+      b = Math.imul(b ^ ch, 2246822519) >>> 0;
+    }
+    return text.length + ':' + a.toString(16) + ':' + b.toString(16);
+  }
+  const signature = (tamas) => digest(JSON.stringify(
     [...tamas].map(t => [
       t.id, t.name, t.species || '', t.device, t.birth || '',
       t.notes || '', t.photo || '', t.createdAt, t.parents || []
     ]).sort((a,b) => a[0].localeCompare(b[0]))
-  );
+  ));
   const ownSignature = () => signature(bridge.get());
-  const getLastSaved = () => { try { return sessionStorage.getItem('tama-cloud-last-signature'); } catch { return null; } };
+  const getLastSaved = () => {
+    try {
+      const stored = localStorage.getItem('tama-cloud-last-signature');
+      if (stored) return stored;
+      const old = sessionStorage.getItem('tama-cloud-last-signature');
+      return old && old.startsWith('[') ? digest(old) : old;
+    } catch { return null; }
+  };
   const rememberSignature = (sig) => {
     lastSignature = sig;
-    try { sessionStorage.setItem('tama-cloud-last-signature', sig); } catch {}
+    try { localStorage.setItem('tama-cloud-last-signature', sig); } catch {}
   };
   const tell = (message) => { $('cloudStatus').textContent = message; };
   function updateStatus(message) {
@@ -106,12 +125,17 @@
   async function connect(silent = false) {
     if (busy) return;
     const entered = keyField.value.trim();
-    const saved = (() => { try { return sessionStorage.getItem('tama-cloud-key') || ''; } catch { return ''; } })();
+    const saved = (() => {
+      try { return localStorage.getItem('tama-cloud-key') || sessionStorage.getItem('tama-cloud-key') || ''; }
+      catch { return ''; }
+    })();
     token = entered || saved;
-    if (!token) { updateStatus('Wpisz klucz TAMA_API_KEY ustawiony w Cloudflare.'); return; }
+    if (!token) { updateStatus('Wpisz klucz TAMA_API_KEY ustawiony w Cloudflare (tylko raz na urządzenie).'); return; }
     busy = true;
     updateStatus('Sprawdzam połączenie…');
     try {
+      // Wait for the local IndexedDB snapshot before comparing it with cloud data.
+      await bridge.ready;
       const remote = await request('GET');
       const remoteSig = signature(remote.tamas);
       const localSig = ownSignature();
@@ -119,18 +143,29 @@
       connected = true;
       conflict = false;
       remoteCount = remote.tamas.length;
-      rememberSignature(remoteSig);
-      try { sessionStorage.setItem('tama-cloud-key', token); } catch {}
-      keyField.value = '';
-      // Safe auto-import: empty local data, or an unedited local copy of an older cloud version.
-      if (localSig !== remoteSig && (bridge.get().length === 0 || (previousSig && previousSig === localSig))) {
-        await bridge.replace(remote.tamas);
+      // Store pairing only on this device, never in the public source code.
+      try {
+        localStorage.setItem('tama-cloud-key', token);
+        sessionStorage.removeItem('tama-cloud-key');
+      } catch {
+        try { sessionStorage.setItem('tama-cloud-key', token); } catch {}
       }
-      ready = ownSignature() === remoteSig;
+      keyField.value = '';
+      const takeCloud = localSig !== remoteSig &&
+        (bridge.get().length === 0 || (previousSig && previousSig === localSig));
+      const uploadLocal = localSig !== remoteSig && previousSig && previousSig === remoteSig;
+      if (takeCloud) await bridge.replace(remote.tamas);
+      rememberSignature(remoteSig);
+      ready = ownSignature() === remoteSig || Boolean(uploadLocal);
+      pending = Boolean(uploadLocal);
       updateStatus();
+      if (pending) setTimeout(flush, 0);
       if (!ready && !silent && !dialog.open) dialog.showModal();
     } catch (error) {
       connected = false; ready = false; conflict = false;
+      if (/Nieprawidłowy klucz/.test(error?.message || '')) {
+        try { localStorage.removeItem('tama-cloud-key'); sessionStorage.removeItem('tama-cloud-key'); } catch {}
+      }
       reportFailure(error);
     } finally { busy = false; updateStatus( $('cloudStatus').textContent ); }
   }
@@ -228,6 +263,8 @@
     token = ''; connected = false; ready = false; conflict = false; pending = false;
     lastSignature = null; remoteCount = 0;
     try {
+      localStorage.removeItem('tama-cloud-key');
+      localStorage.removeItem('tama-cloud-last-signature');
       sessionStorage.removeItem('tama-cloud-key');
       sessionStorage.removeItem('tama-cloud-last-signature');
     } catch {}
@@ -248,10 +285,25 @@
     timer = setTimeout(flush, 700);
   });
   // Refresh from the other phone while the app is open and connected.
-  setInterval(() => { if (!document.hidden) refresh(); }, 20000);
-  window.addEventListener('focus', () => { if (connected) refresh(); });
+  setInterval(() => {
+    if (document.hidden) return;
+    if (connected && pending && ready && !saving && !busy) flush();
+    else if (connected) refresh();
+    else if (storedKeyPresent()) connect(true);
+  }, 20000);
+  const storedKeyPresent = () => {
+    try { return Boolean(localStorage.getItem('tama-cloud-key') || sessionStorage.getItem('tama-cloud-key')); }
+    catch { return false; }
+  };
+  window.addEventListener('focus', () => {
+    if (connected && pending) flush();
+    else if (connected) refresh();
+    else if (storedKeyPresent()) connect(true);
+  });
+  window.addEventListener('online', () => {
+    if (connected && pending) flush();
+    else if (!connected && storedKeyPresent()) connect(true);
+  });
   updateStatus();
-  try {
-    if (sessionStorage.getItem('tama-cloud-key')) connect(true);
-  } catch {}
+  if (storedKeyPresent()) connect(true);
 })();
