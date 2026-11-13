@@ -5,6 +5,7 @@
 const ORIGIN = "https://ambitnanazwa91.github.io";
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const MAX_PHOTO_CHARS = 900000;
+const HISTORY_LIMIT = 40;
 const cors = (origin) => origin === ORIGIN ? {
   "Access-Control-Allow-Origin": ORIGIN,
   "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
@@ -94,27 +95,60 @@ async function fetchFamily(db) {
   }));
   return {tamas};
 }
-async function saveFamily(db, tamas) {
-  const now = Date.now();
-  const statements = [
+
+async function ensureHistory(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS tama_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, saved_at INTEGER NOT NULL, label TEXT NOT NULL, tama_count INTEGER NOT NULL, snapshot_json TEXT NOT NULL)").run();
+}
+async function listHistory(db) {
+  await ensureHistory(db);
+  const existing = await db.prepare("SELECT id FROM tama_versions ORDER BY id DESC LIMIT 1").first();
+  if (!existing) {
+    const family = await fetchFamily(db);
+    await db.prepare("INSERT INTO tama_versions (saved_at,label,tama_count,snapshot_json) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM tama_versions)")
+      .bind(Date.now(),"Stan początkowy",family.tamas.length,JSON.stringify(family)).run();
+  }
+  const records = await db.prepare("SELECT id,saved_at,label,tama_count FROM tama_versions ORDER BY id DESC LIMIT ?")
+    .bind(HISTORY_LIMIT).all();
+  return {versions:records.results||[]};
+}
+async function getVersion(db, id) {
+  await ensureHistory(db);
+  const row = await db.prepare("SELECT id,saved_at,label,tama_count,snapshot_json FROM tama_versions WHERE id = ?")
+    .bind(id).first();
+  if (!row) return null;
+  let data;
+  try { data = JSON.parse(row.snapshot_json); } catch { throw Error("Uszkodzona wersja kopii."); }
+  const tamas = validateFamily(data);
+  return {id:row.id,saved_at:row.saved_at,label:row.label,tama_count:row.tama_count,tamas};
+}
+async function saveFamily(db,tamas,label="Automatyczny zapis") {
+  await ensureHistory(db);
+  const current=await fetchFamily(db);
+  const now=Date.now();
+  // Each D1 batch commits or rolls back all statements together.
+  const statements=[
+    db.prepare("INSERT INTO tama_versions (saved_at,label,tama_count,snapshot_json) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM tama_versions)")
+      .bind(now,"Stan przed pierwszą zmianą",current.tamas.length,JSON.stringify(current)),
     db.prepare("DELETE FROM tama_parents"),
     db.prepare("DELETE FROM tamas")
   ];
   for (const t of tamas) {
-    statements.push(db.prepare(
-      "INSERT INTO tamas (id,name,species,device,birth,notes,photo_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)"
-    ).bind(t.id,t.name,t.species,t.device,t.birth || null,t.notes,t.photo || null,t.createdAt,now));
+    statements.push(db.prepare("INSERT INTO tamas (id,name,species,device,birth,notes,photo_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
+      .bind(t.id,t.name,t.species,t.device,t.birth||null,t.notes,t.photo||null,t.createdAt,now));
   }
   for (const t of tamas) {
-    t.parents.forEach((parentId, i) => {
-      statements.push(db.prepare(
-        "INSERT INTO tama_parents (child_id,parent_id,parent_order) VALUES (?,?,?)"
-      ).bind(t.id,parentId,i+1));
+    t.parents.forEach((parent,i)=>{
+      statements.push(db.prepare("INSERT INTO tama_parents (child_id,parent_id,parent_order) VALUES (?,?,?)")
+        .bind(t.id,parent,i+1));
     });
   }
-  // D1 batch is transactional. If any statement fails, the whole batch rolls back.
+  statements.push(db.prepare("INSERT INTO tama_versions (saved_at,label,tama_count,snapshot_json) VALUES (?,?,?,?)")
+    .bind(now,label,tamas.length,JSON.stringify({tamas})));
+  statements.push(db.prepare("DELETE FROM tama_versions WHERE id NOT IN (SELECT id FROM tama_versions ORDER BY id DESC LIMIT ?)")
+    .bind(HISTORY_LIMIT));
   await db.batch(statements);
 }
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -127,7 +161,12 @@ export default {
       const ready = Boolean(env.DB && env.TAMA_API_KEY);
       return response({ok:ready, message: ready ? "Tama API gotowe" : "Brakuje DB lub TAMA_API_KEY"},ready?200:503,origin);
     }
-    if (url.pathname !== "/api/family" || !["GET","PUT"].includes(request.method)) {
+    const historyId = url.pathname.startsWith("/api/history/") ? url.pathname.slice("/api/history/".length) : "";
+    const historyItem = request.method === "GET" && /^[1-9][0-9]*$/.test(historyId);
+    const historyList = url.pathname === "/api/history" && request.method === "GET";
+    const restore = url.pathname === "/api/history/restore" && request.method === "POST";
+    const family = url.pathname === "/api/family" && ["GET","PUT"].includes(request.method);
+    if (!historyItem && !historyList && !restore && !family) {
       return response({error:"Nie znaleziono."},404,origin);
     }
     if (!env.DB || !env.TAMA_API_KEY) return response({error:"API nie jest jeszcze skonfigurowane."},503,origin);
@@ -137,18 +176,30 @@ export default {
       return response({error:"Nieprawidłowy klucz dostępu."},401,origin);
     }
     try {
-      if (request.method === "GET") {
-        return response(await fetchFamily(env.DB),200,origin);
+      if (historyList) return response(await listHistory(env.DB),200,origin);
+      if (historyItem) {
+        const id=Number(historyId);
+        if (!Number.isSafeInteger(id)) return response({error:"Niepoprawny numer wersji."},400,origin);
+        const version=await getVersion(env.DB,id);
+        return version?response(version,200,origin):response({error:"Nie znaleziono kopii."},404,origin);
       }
-      const contentLength = Number(request.headers.get("Content-Length") || 0);
-      if (contentLength > MAX_BODY_BYTES) return response({error:"Dane są zbyt duże."},413,origin);
-      const text = await request.text();
-      if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) {
-        return response({error:"Dane są zbyt duże."},413,origin);
+      if (family && request.method==="GET") return response(await fetchFamily(env.DB),200,origin);
+      const contentLength=Number(request.headers.get("Content-Length")||0);
+      if (contentLength>MAX_BODY_BYTES) return response({error:"Dane są zbyt duże."},413,origin);
+      const payload=await request.text();
+      if (new TextEncoder().encode(payload).length>MAX_BODY_BYTES) return response({error:"Dane są zbyt duże."},413,origin);
+      let data;
+      try { data=JSON.parse(payload); } catch { return response({error:"Niepoprawny JSON."},400,origin); }
+      if (restore) {
+        const id=Number(data?.versionId);
+        if (!Number.isSafeInteger(id)||id<1) return response({error:"Niepoprawny numer kopii."},400,origin);
+        const version=await getVersion(env.DB,id);
+        if (!version) return response({error:"Nie znaleziono kopii."},404,origin);
+        await saveFamily(env.DB,version.tamas,"Przywrócono kopię #" + id);
+        return response({ok:true,count:version.tamas.length,tamas:version.tamas},200,origin);
       }
       let tamas;
-      try { tamas = validateFamily(JSON.parse(text)); }
-      catch (e) { return response({error:e.message},400,origin); }
+      try { tamas=validateFamily(data); } catch(e) { return response({error:e.message},400,origin); }
       await saveFamily(env.DB,tamas);
       return response({ok:true,count:tamas.length},200,origin);
     } catch (e) {
