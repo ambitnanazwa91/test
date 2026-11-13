@@ -1,0 +1,17 @@
+# TamaRodzina - Cloudflare Workers Builds
+# Rename to wrangler.toml after replacing the D1 database ID.
+# The D1 ID is visible in Cloudflare > Storage & databases > D1 > tama.
+# Never put TAMA_API_KEY's VALUE in this file.
+name = "tama-api"
+main = "tama-api.js"
+compatibility_date = "2026-11-13"
+workers_dev = true
+keep_vars = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tama"
+database_id = "REPLACE_WITH_EXISTING_TAMA_D1_DATABASE_ID"
+
+[secrets]
+required = ["TAMA_API_KEY"]
