@@ -21,7 +21,8 @@
   <button class="btn" id="exampleBtn" title="Pokaż przykładowe drzewo">✨ Przykład</button>
   <button class="btn" id="exportBtn" title="Pobierz bezpieczną kopię wszystkich danych i zdjęć">↓ Kopia</button>
   <button class="btn" id="importBtn" title="Wczytaj kopię zapasową">↑ Wczytaj</button>
-  <button class="btn primary" id="addBtn">＋ Dodaj Tama</button>
+  <button class="btn" id="cloudBtn" title="Połącz wspólne drzewo">☁️ Chmura</button>
+   <button class="btn primary" id="addBtn">＋ Dodaj Tama</button>
   <input type="file" id="importFile" accept="application/json,.json" />
  </div>
 </header>
@@ -78,7 +79,8 @@ function openDb(){return new Promise((ok,fail)=>{if(!window.indexedDB){fail(new 
 function readDb(){return new Promise((ok,fail)=>{const tx=db.transaction('app','readonly'),r=tx.objectStore('app').get('family');r.onsuccess=()=>ok(r.result);r.onerror=()=>fail(r.error)})}
 function writeDb(data){return new Promise((ok,fail)=>{const tx=db.transaction('app','readwrite');tx.objectStore('app').put(data,'family');tx.oncomplete=ok;tx.onerror=()=>fail(tx.error)})}
 async function load(){try{await openDb();const d=await readDb();state.tamas=Array.isArray(d?.tamas)?d.tamas:[]}catch(e){state.storage='local';try{state.tamas=JSON.parse(localStorage.getItem('tamarodzina-family')||'[]')}catch{state.tamas=[]}console.warn('Dostępny tylko zapis awaryjny',e)}render(true)}
-async function persist(){try{if(state.storage==='indexeddb')await writeDb({version:1,tamas:state.tamas});else localStorage.setItem('tamarodzina-family',JSON.stringify(state.tamas))}catch(e){notify('Nie udało się zapisać. Pobierz kopię bezpieczeństwa!');console.error(e)}}
+let suspendCloudChange=false;
+ async function persist(){try{if(state.storage==='indexeddb')await writeDb({version:1,tamas:state.tamas});else localStorage.setItem('tamarodzina-family',JSON.stringify(state.tamas));if(!suspendCloudChange)window.dispatchEvent(new Event('tama:local-change'));return true}catch(e){notify('Nie udało się zapisać. Pobierz kopię bezpieczeństwa!');console.error(e);return false}}
 function photoEl(t){return safePhoto(t.photo)?`<img src="${t.photo}" alt="Zdjęcie Tama ${esc(t.name)}" draggable="false">`:'🥚'}
 function render(fit=false){const total=state.tamas.length,memo=new Map();const gens=total?Math.max(...state.tamas.map(t=>generation(t.id,memo)))+1:0;
  $('#statTotal').textContent=total;$('#statGens').textContent=gens;$('#statBabies').textContent=state.tamas.filter(t=>t.parents?.length).length;
@@ -132,8 +134,11 @@ async function loadExample(){if(state.tamas.length&&!confirm('Przykład zastąpi
 $('#addBtn').onclick=()=>openEditor();$('#emptyAdd').onclick=()=>openEditor();$('#exampleBtn').onclick=loadExample;$('#exportBtn').onclick=exportFile;$('#importBtn').onclick=()=>$('#importFile').click();$('#importFile').onchange=e=>importFile(e.target.files?.[0]);$('#tamaForm').onsubmit=saveTama;$('#photoFile').onchange=e=>processPhoto(e.target.files?.[0]);$('#removePhoto').onclick=()=>{state.photo='';$('#photoFile').value='';renderPreview()};$$('[data-close]').forEach(b=>b.onclick=()=>closeDialog(b.dataset.close));
 $$('.filter').forEach(b=>b.onclick=()=>{state.filter=b.dataset.filter;$$('.filter').forEach(x=>x.classList.toggle('active',x===b));render()});$('#search').oninput=e=>{state.query=e.target.value.trim().toLocaleLowerCase('pl');render()};$('#fitBtn').onclick=fitView;$('#zoomIn').onclick=()=>zoom(1.2);$('#zoomOut').onclick=()=>zoom(1/1.2);
 const viewport=$('#viewport');let pointers=new Map(),dragStart=null,lastPinch=null,moved=false;viewport.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;viewport.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===1){dragStart={x:e.clientX,y:e.clientY,vx:state.view.x,vy:state.view.y};moved=false;viewport.classList.add('grabbing')}else lastPinch=null});viewport.addEventListener('pointermove',e=>{if(!pointers.has(e.pointerId))return;const prev=pointers.get(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===1&&dragStart){const dx=e.clientX-dragStart.x,dy=e.clientY-dragStart.y;if(Math.abs(dx)+Math.abs(dy)>4)moved=true;state.view.x=dragStart.vx+dx;state.view.y=dragStart.vy+dy;applyView()}else if(pointers.size===2){const a=[...pointers.values()],distance=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),r=viewport.getBoundingClientRect(),centerX=(a[0].x+a[1].x)/2-r.left,centerY=(a[0].y+a[1].y)/2-r.top;if(lastPinch&&distance>0){zoom(distance/lastPinch.distance,centerX,centerY);state.view.x+=(centerX-lastPinch.x);state.view.y+=(centerY-lastPinch.y);applyView()}lastPinch={distance,x:centerX,y:centerY};moved=true}});function endPointer(e){pointers.delete(e.pointerId);if(pointers.size===0){viewport.classList.remove('grabbing');dragStart=null;lastPinch=null}else if(pointers.size===1){const p=[...pointers.values()][0];dragStart={x:p.x,y:p.y,vx:state.view.x,vy:state.view.y};lastPinch=null}}viewport.addEventListener('pointerup',endPointer);viewport.addEventListener('pointercancel',endPointer);viewport.addEventListener('wheel',e=>{e.preventDefault();const r=viewport.getBoundingClientRect();zoom(Math.exp(-e.deltaY*.0011),e.clientX-r.left,e.clientY-r.top)},{passive:false});viewport.addEventListener('click',e=>{if(!e.target.closest('button')&&!moved&&state.selected){state.selected=null;render()}});
-window.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('#editor').open&&!$('#detail').open&&state.selected){state.selected=null;render()}}if(e.target.matches('input,textarea,select'))return;if(e.key==='+'||e.key==='=')zoom(1.2);if(e.key==='-')zoom(1/1.2)});window.addEventListener('resize',()=>{if(state.tamas.length)fitView()});load();
+window.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('#editor').open&&!$('#detail').open&&state.selected){state.selected=null;render()}}if(e.target.matches('input,textarea,select'))return;if(e.key==='+'||e.key==='=')zoom(1.2);if(e.key==='-')zoom(1/1.2)});window.addEventListener('resize',()=>{if(state.tamas.length)fitView()});
+ window.tamaBridge={get:()=>JSON.parse(JSON.stringify(state.tamas)),replace:async(tamas)=>{const checked=validateImport({tamas});const backup=state.tamas;state.tamas=checked;suspendCloudChange=true;try{const success=await persist();if(!success){state.tamas=backup;throw new Error('Nie udało się zapisać danych na urządzeniu.')}}finally{suspendCloudChange=false}state.selected=null;render(true)}};
+ load();
 })();
 </script>
+<script src="./cloud-sync.js?v=1" defer></script>
 </body>
 </html>
