@@ -27,6 +27,11 @@
         Wpisujesz go tylko raz: aplikacja zapamiętuje go na tym urządzeniu
         i sama łączy się z chmurą po otwarciu. Klucz nie jest publikowany na GitHubie.
       </p>
+      <div style="border:1px solid #e8defb;border-radius:18px;padding:16px;background:linear-gradient(120deg,#f7f0ff,#fff7fb);margin:5px 0 17px">
+        <div style="font-size:12px;font-weight:800;color:#716398">☁️ Aktualnie zapisane w bazie D1</div>
+        <div id="cloudRemoteCount" style="font-size:46px;font-weight:850;line-height:1.25;color:#42366a" aria-live="polite">—</div>
+        <div id="cloudCountInfo" style="font-size:12px;color:#8f86a9;line-height:1.5">Otwórz Chmurę, aby sprawdzić bazę.</div>
+      </div>
       <div class="field"><label for="cloudKey">Prywatny klucz dostępu</label>
         <input id="cloudKey" type="password" autocomplete="off" placeholder="Wklej TAMA_API_KEY" />
       </div>
@@ -55,7 +60,12 @@
     </div>`;
   document.body.appendChild(dialog);
   $('cloudClose').onclick = () => dialog.close();
-  cloudBtn.onclick = () => { updateStatus(); if (!dialog.open) dialog.showModal(); };
+  cloudBtn.onclick = () => {
+    updateStatus();
+    if (!dialog.open) dialog.showModal();
+    // Always query Cloudflare D1 on opening, even when the local tree differs.
+    void refreshRemoteCount();
+  };
   const keyField = $('cloudKey');
 
   // Tiny data fingerprint instead of duplicating full-size images in localStorage.
@@ -88,6 +98,38 @@
     try { localStorage.setItem('tama-cloud-last-signature', sig); } catch {}
   };
   const tell = (message) => { $('cloudStatus').textContent = message; };
+  let remoteCountRequest = 0;
+  async function refreshRemoteCount() {
+    const requestId = ++remoteCountRequest;
+    const countEl = $('cloudRemoteCount');
+    const infoEl = $('cloudCountInfo');
+    countEl.textContent = '…';
+    infoEl.textContent = 'Sprawdzam aktualną liczbę w bazie Cloudflare D1…';
+    // A fresh page load might still be establishing the existing pairing.
+    if (!token) {
+      try { token = localStorage.getItem('tama-cloud-key') || sessionStorage.getItem('tama-cloud-key') || ''; }
+      catch { token = ''; }
+    }
+    if (!token) {
+      countEl.textContent = '—';
+      infoEl.textContent = 'Najpierw połącz aplikację z chmurą, aby odczytać bazę.';
+      return;
+    }
+    try {
+      const remote = await request('GET');
+      if (requestId !== remoteCountRequest) return; // Ignore older responses.
+      remoteCount = remote.tamas.length;
+      countEl.textContent = String(remoteCount);
+      infoEl.textContent = 'Odczyt bezpośrednio z bazy • ' + new Date().toLocaleTimeString('pl-PL', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+    } catch (error) {
+      if (requestId !== remoteCountRequest) return;
+      countEl.textContent = '—';
+      infoEl.textContent = 'Nie udało się pobrać liczby z bazy: ' + (error?.message || 'błąd połączenia');
+      console.warn('Błąd odczytu licznika Cloudflare D1:', error);
+    }
+  }
   function updateStatus(message) {
     const count = bridge.get().length;
     cloudBtn.textContent = connected ? (conflict ? '☁️ !' : ready ? '☁️ ✓' : '☁️ …') : '☁️ Chmura';
@@ -148,6 +190,7 @@
       connected = true;
       conflict = false;
       remoteCount = remote.tamas.length;
+      if (dialog.open) void refreshRemoteCount();
       // Store pairing only on this device, never in the public source code.
       try {
         localStorage.setItem('tama-cloud-key', token);
@@ -197,6 +240,7 @@
       await request('PUT', payload);
       rememberSignature(signature(payload));
       remoteCount = payload.length;
+      if (dialog.open) void refreshRemoteCount();
     } catch (error) {
       pending = true;
       reportFailure(error);
@@ -219,6 +263,7 @@
       await request('PUT', local);
       rememberSignature(signature(local));
       remoteCount = local.length;
+      if (dialog.open) void refreshRemoteCount();
       ready = true; conflict = false;
       refreshAfterWrite();
     } catch(error) { reportFailure(error); }
@@ -235,6 +280,7 @@
       await bridge.replace(remote.tamas);
       rememberSignature(signature(remote.tamas));
       remoteCount = remote.tamas.length;
+      if (dialog.open) void refreshRemoteCount();
       ready = true; conflict = false; pending = false;
       updateStatus();
     } catch(error) { reportFailure(error); }
@@ -274,6 +320,9 @@
       sessionStorage.removeItem('tama-cloud-last-signature');
     } catch {}
     keyField.value = '';
+    ++remoteCountRequest;
+    $('cloudRemoteCount').textContent = '—';
+    $('cloudCountInfo').textContent = 'Rozłączono — połącz się, aby ponownie odczytać liczbę z bazy.';
     updateStatus('Rozłączono. Twoje lokalne Tamy pozostały bez zmian.');
   }
   $('cloudConnect').onclick = () => connect(false);
