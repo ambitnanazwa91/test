@@ -44,6 +44,12 @@
         <button type="button" class="btn danger" id="cloudDisconnect">Rozłącz</button>
       </div>
       <div class="section-divider" style="margin:20px 0 13px"></div>
+      <div class="eyebrow" style="margin-bottom:8px">🕓 Historia automatycznych kopii</div>
+      <p style="font-size:12px;color:#817b9b;line-height:1.5">Baza zachowuje ostatnie 40 zapisanych wersji drzewa, wraz ze zdjęciami i relacjami Breed. Przywrócenie także tworzy nową wersję.</p>
+      <button type="button" class="btn" id="historyRefresh">↻ Odśwież historię</button>
+      <div id="historyStatus" role="status" style="font-size:12px;color:#817b9b;margin:10px 0"></div>
+      <div id="historyList" style="display:grid;gap:8px;max-height:270px;overflow:auto"></div>
+      <div class="section-divider" style="margin:20px 0 13px"></div>
       <div class="eyebrow" style="margin-bottom:8px">Przenoszenie danych</div>
       <p style="font-size:12px;line-height:1.6;color:#817b9b;margin:0 0 12px">
         Przed pierwszym połączeniem pobierz kopię zapasową z głównego ekranu.
@@ -67,6 +73,7 @@
     if (!dialog.open) dialog.showModal();
     // Always query Cloudflare D1 on opening, even when the local tree differs.
     void refreshRemoteCount();
+    void loadHistory();
   };
   const keyField = $('cloudKey');
 
@@ -100,6 +107,88 @@
     try { localStorage.setItem('tama-cloud-last-signature', sig); } catch {}
   };
   const tell = (message) => { $('cloudStatus').textContent = message; };
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+      '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+    })[ch]);
+  }
+  async function historyRequest(path, method='GET', body) {
+    if (!token) throw new Error('Najpierw połącz aplikację z chmurą.');
+    const r = await fetch('https://tama-api.yoszhi.workers.dev'+path,{
+      method,
+      cache:'no-store',
+      headers: {
+        Authorization:'Bearer '+token,
+        ...(method==='POST'?{'Content-Type':'application/json'}:{})
+      },
+      body: method==='POST'?JSON.stringify(body):undefined
+    });
+    const result = await r.json();
+    if (!r.ok) throw new Error(result.error || 'Błąd '+r.status);
+    return result;
+  }
+  let historyLoading = false;
+  async function loadHistory() {
+    if (historyLoading) return;
+    const label=$('historyStatus'),list=$('historyList');
+    if (!token) {
+      label.textContent='Połącz się z chmurą, aby zobaczyć kopie.';
+      list.innerHTML='';
+      return;
+    }
+    historyLoading=true;
+    $('historyRefresh').disabled=true;
+    label.textContent='Pobieram kopie z bazy D1…';
+    try {
+      const result=await historyRequest('/api/history');
+      const versions=result.versions||[];
+      label.textContent=versions.length+' zapisanych wersji • ostatnie 40 kopii';
+      list.innerHTML=versions.map(v=>{
+        const date=new Date(v.saved_at).toLocaleString('pl-PL');
+        return '<div style="display:flex;gap:9px;align-items:center;justify-content:space-between;border:1px solid #e9e3f4;border-radius:12px;padding:10px;background:#fff">'
+          +'<div style="min-width:0;font-size:12px"><b>Wersja #'+Number(v.id)+'</b> · '+escapeHtml(date)
+          +'<div style="color:#817b9b;margin-top:4px">'+escapeHtml(v.label)+' · '+Number(v.tama_count)+' Tamów</div></div>'
+          +'<button type="button" class="btn small-btn" data-restore-id="'+Number(v.id)+'">Przywróć</button></div>';
+      }).join('')||'<p style="font-size:12px">Brak kopii.</p>';
+      list.querySelectorAll('[data-restore-id]').forEach(btn=>{
+        btn.onclick=()=>restoreVersion(Number(btn.dataset.restoreId));
+      });
+    } catch(e) {
+      label.textContent='Nie udało się pobrać historii: '+e.message+'. Jeśli API nie ma jeszcze historii, zaktualizuj kod Workera.';
+      list.innerHTML='';
+    } finally {
+      historyLoading=false;
+      $('historyRefresh').disabled=false;
+    }
+  }
+  async function restoreVersion(id) {
+    if (!connected || busy || saving || pending || conflict || !ready) {
+      $('historyStatus').textContent='Zakończ bieżącą synchronizację przed przywracaniem wersji.';
+      return;
+    }
+    if (!confirm('Przywrócić wersję #'+id+'?\\n\\nAktualne drzewo zostanie zastąpione, ale jego kopia zostanie zachowana w historii. Warto także pobrać Kopię JSON.')) return;
+    busy=true;
+    $('historyStatus').textContent='Przywracam wersję #'+id+'…';
+    updateStatus();
+    try {
+      const current=await request('GET');
+      if (signature(current.tamas)!==lastSignature) {
+        conflict=true;ready=false;
+        throw new Error('Dane w chmurze zmieniły się. Najpierw zsynchronizuj oba telefony.');
+      }
+      const restored=await historyRequest('/api/history/restore','POST',{versionId:id});
+      await bridge.replace(restored.tamas);
+      rememberSignature(signature(restored.tamas));
+      remoteCount=restored.tamas.length;
+      conflict=false;ready=true;pending=false;syncError='';
+      $('historyStatus').textContent='✅ Przywrócono wersję #'+id+'.';
+      await loadHistory();
+      void refreshRemoteCount();
+    } catch(e) {
+      $('historyStatus').textContent='⚠️ '+e.message+' — sprawdź stan w chmurze.';
+      syncError=e.message;
+    } finally {busy=false;updateStatus();}
+  }
   let remoteCountRequest = 0;
   async function refreshRemoteCount() {
     const requestId = ++remoteCountRequest;
@@ -208,6 +297,7 @@
         try { sessionStorage.setItem('tama-cloud-key', token); } catch {}
       }
       keyField.value = '';
+      if(dialog.open) void loadHistory();
       const takeCloud = localSig !== remoteSig &&
         (bridge.get().length === 0 || (previousSig && previousSig === localSig));
       const uploadLocal = localSig !== remoteSig && previousSig && previousSig === remoteSig;
@@ -285,7 +375,7 @@
       rememberSignature(signature(local));
       remoteCount = local.length;
       syncError = '';
-      if (dialog.open) void refreshRemoteCount();
+      if (dialog.open) { void refreshRemoteCount(); void loadHistory(); }
       ready = true; conflict = false;
       refreshAfterWrite();
     } catch(error) { reportFailure(error); }
@@ -303,7 +393,7 @@
       rememberSignature(signature(remote.tamas));
       remoteCount = remote.tamas.length;
       syncError = '';
-      if (dialog.open) void refreshRemoteCount();
+      if (dialog.open) { void refreshRemoteCount(); void loadHistory(); }
       ready = true; conflict = false; pending = false;
       updateStatus();
     } catch(error) { reportFailure(error); }
@@ -347,11 +437,14 @@
     } catch {}
     keyField.value = '';
     ++remoteCountRequest;
+    $('historyList').innerHTML='';
+    $('historyStatus').textContent='Rozłączono.';
     $('cloudRemoteCount').textContent = '—';
     $('cloudCountInfo').textContent = 'Rozłączono — połącz się, aby ponownie odczytać liczbę z bazy.';
     updateStatus('Rozłączono. Twoje lokalne Tamy pozostały bez zmian.');
   }
-  $('cloudConnect').onclick = () => connect(false);
+  $('historyRefresh').onclick = () => loadHistory();
+  $('cloudConnect').onclick = async () => { await connect(false); if(connected) void loadHistory(); };
   $('cloudUpload').onclick = forceUpload;
   $('cloudDownload').onclick = forceDownload;
   $('cloudRefresh').onclick = refresh;
