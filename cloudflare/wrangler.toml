@@ -1,4 +1,5 @@
 # TamaRodzina - Cloudflare Workers Builds
+# First automatic deployment: existing tama-api Worker and tama D1.
 # Configured for the existing tama D1 database. GitHub does not contain the API secret.
 # Never put TAMA_API_KEY's VALUE in this file.
 name = "tama-api"
