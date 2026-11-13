@@ -1,0 +1,16 @@
+# TamaRodzina - Cloudflare Workers Builds
+# Configured for the existing tama D1 database. GitHub does not contain the API secret.
+# Never put TAMA_API_KEY's VALUE in this file.
+name = "tama-api"
+main = "tama-api.js"
+compatibility_date = "2026-11-13"
+workers_dev = true
+keep_vars = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tama"
+database_id = "ed44c34b-46f8-44e0-8cc5-48cac58ed4e6"
+
+[secrets]
+required = ["TAMA_API_KEY"]
