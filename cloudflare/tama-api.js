@@ -8,7 +8,7 @@ const MAX_PHOTO_CHARS = 900000;
 const HISTORY_LIMIT = 40;
 const cors = (origin) => origin === ORIGIN ? {
   "Access-Control-Allow-Origin": ORIGIN,
-  "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Access-Control-Max-Age": "86400",
   "Vary": "Origin"
