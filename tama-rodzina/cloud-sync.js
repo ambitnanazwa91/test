@@ -131,6 +131,11 @@
     })();
     token = entered || saved;
     if (!token) { updateStatus('Wpisz klucz TAMA_API_KEY ustawiony w Cloudflare (tylko raz na urządzenie).'); return; }
+    if (!/^[\x21-\x7E]+$/.test(token)) {
+      token = '';
+      updateStatus('⚠️ W kluczu jest niedozwolony znak (np. polska litera, emoji, spacja lub znak nowej linii). Ustaw w Cloudflare nowy TAMA_API_KEY z samych angielskich liter i cyfr, zapisz, a następnie wpisz go ponownie tutaj.');
+      return;
+    }
     busy = true;
     updateStatus('Sprawdzam połączenie…');
     try {
