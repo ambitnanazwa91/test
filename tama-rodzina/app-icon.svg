@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffc1da"/>
+      <stop offset="0.55" stop-color="#ff8fbd"/>
+      <stop offset="1" stop-color="#df568f"/>
+    </linearGradient>
+    <linearGradient id="shell" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#fff4a9"/>
+      <stop offset="1" stop-color="#ffd166"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="28" stdDeviation="20" flood-color="#302747" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="112" cy="142" r="24" fill="#ffd166" opacity="0.9"/>
+  <circle cx="910" cy="176" r="20" fill="#74dce6" opacity="0.95"/>
+  <circle cx="866" cy="878" r="18" fill="#927de8" opacity="0.9"/>
+  <path d="M84 778l18 36 40 6-29 28 7 40-36-19-36 19 7-40-29-28 40-6Z" fill="#fff6dc" opacity="0.82"/>
+  <g filter="url(#shadow)">
+    <path d="M512 82c-210 0-356 160-356 392v248c0 154 105 240 356 240s356-86 356-240V474C868 242 722 82 512 82Z" fill="url(#shell)" stroke="#302747" stroke-width="42"/>
+    <path d="M279 178c91-76 323-100 466 25" fill="none" stroke="#fff9cf" stroke-width="34" stroke-linecap="round" opacity="0.72"/>
+    <rect x="230" y="236" width="564" height="420" rx="112" fill="#dce9b8" stroke="#302747" stroke-width="36"/>
+    <rect x="267" y="273" width="490" height="346" rx="80" fill="none" stroke="#edf4cf" stroke-width="18" opacity="0.68"/>
+    <path d="M512 314c-111 0-172 93-172 180 0 105 67 158 172 158s172-53 172-158c0-87-61-180-172-180Z" fill="#fff6dc" stroke="#344936" stroke-width="24"/>
+    <circle cx="450" cy="474" r="20" fill="#344936"/>
+    <circle cx="574" cy="474" r="20" fill="#344936"/>
+    <path d="M448 548c38 35 90 35 128 0" fill="none" stroke="#344936" stroke-width="22" stroke-linecap="round"/>
+    <circle cx="359" cy="782" r="54" fill="#ff8fbd" stroke="#302747" stroke-width="24"/>
+    <circle cx="512" cy="810" r="54" fill="#74dce6" stroke="#302747" stroke-width="24"/>
+    <circle cx="665" cy="782" r="54" fill="#927de8" stroke="#302747" stroke-width="24"/>
+    <circle cx="344" cy="764" r="13" fill="#fff" opacity="0.55"/>
+    <circle cx="497" cy="792" r="13" fill="#fff" opacity="0.55"/>
+    <circle cx="650" cy="764" r="13" fill="#fff" opacity="0.55"/>
+  </g>
+</svg>
